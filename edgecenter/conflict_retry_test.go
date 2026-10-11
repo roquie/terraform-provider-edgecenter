@@ -166,6 +166,134 @@ func TestConflictRetryTransportExhaustsRetries(t *testing.T) {
 	}
 }
 
+func TestConflictRetryTransportRetriesImmutableOnPost(t *testing.T) {
+	setFastConflictBackoff(t)
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) <= 2 {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`Load Balancer 447d2959-8ae0-4ca0-8d47-9f050a3637d7 is immutable and cannot be updated.`))
+
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": "listener-1"}`))
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Transport: newConflictRetryTransport(http.DefaultTransport)}
+
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		srv.URL,
+		bytes.NewBufferString(`{"name": "test-listener"}`),
+	)
+	if err != nil {
+		t.Fatalf("cannot create request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	if got := atomic.LoadInt32(&hits); got != 3 {
+		t.Fatalf("expected 3 requests, got %d", got)
+	}
+}
+
+func TestConflictRetryTransportExhaustsRetriesOnPermanentImmutable(t *testing.T) {
+	setFastConflictBackoff(t)
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`Load Balancer 447d2959 is immutable and cannot be updated.`))
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Transport: newConflictRetryTransport(http.DefaultTransport)}
+
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		srv.URL,
+		bytes.NewBufferString(`{"name": "test-pool"}`),
+	)
+	if err != nil {
+		t.Fatalf("cannot create request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("cannot read body: %v", err)
+	}
+
+	if !bytes.Contains(body, []byte("is immutable and cannot be updated")) {
+		t.Fatalf("unexpected body: %s", body)
+	}
+
+	if got := atomic.LoadInt32(&hits); got != transientConflictRetryMax+1 {
+		t.Fatalf("expected %d requests, got %d", transientConflictRetryMax+1, got)
+	}
+}
+
+func TestConflictRetryTransportNoRetryImmutableOnGet(t *testing.T) {
+	setFastConflictBackoff(t)
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`Load Balancer 447d2959 is immutable and cannot be updated.`))
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Transport: newConflictRetryTransport(http.DefaultTransport)}
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("cannot read body: %v", err)
+	}
+
+	if !bytes.Contains(body, []byte("is immutable and cannot be updated")) {
+		t.Fatalf("unexpected body: %s", body)
+	}
+
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("expected 1 request, got %d", got)
+	}
+}
+
 func TestConflictRetryTransportReplaysRequestBody(t *testing.T) {
 	setFastConflictBackoff(t)
 
