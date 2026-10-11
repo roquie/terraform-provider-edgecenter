@@ -1,418 +1,74 @@
-name: build
+name: Credential-free CI
 
 on:
+  push:
+    branches:
+      - ci/patched-provider-releases
   pull_request:
-    branches: [master, main, release-cloud, instanceV2]
+  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
-  cancel-in-progress: true
-
 env:
-  EC_USERNAME: ${{ secrets.EC_USERNAME }}
-  EC_PASSWORD: ${{ secrets.EC_PASSWORD }}
-  EC_API: ${{ secrets.EC_API }}
-  EC_CDN_URL: ${{ secrets.EC_CDN_URL }}
-  EC_DNS_API: ${{ secrets.EC_DNS_API }}
-  EC_PLATFORM: ${{ secrets.EC_PLATFORM }}
-  EC_STORAGE_API: ${{ secrets.EC_STORAGE_API }}
-  TEST_PROJECT_ID: ${{ secrets.TEST_PROJECT_ID }}
-  TEST_REGION_ID: ${{ secrets.TEST_REGION_ID }}
-  TEST_MKAAS_REGION_ID: ${{ secrets.TEST_MKAAS_REGION_ID }}
-  TF_ACC: ${{ secrets.TF_ACC }}
+  TF_ACC: ''
+  GOTELEMETRY: 'off'
+  GOENV: 'off'
+  GOTOOLCHAIN: go1.26.8
+  GOSUMDB: sum.golang.org
+  GOPROXY: https://proxy.golang.org,direct
+  GOWORK: 'off'
+  GOFLAGS: -mod=readonly
 
 jobs:
-  detect:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      shared: ${{ steps.f.outputs.shared }}
-      cloud: ${{ steps.f.outputs.cloud }}
-      mkaas: ${{ steps.f.outputs.mkaas }}
-      cdn: ${{ steps.f.outputs.cdn }}
-      dns: ${{ steps.f.outputs.dns }}
-      storage: ${{ steps.f.outputs.storage }}
-      reseller: ${{ steps.f.outputs.reseller }}
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
-        id: f
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          filters: .github/paths-filters.yml
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.8'
+          check-latest: false
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test -race -count=1 -timeout=20m ./...
 
-  smoke:
-    runs-on: ubuntu-latest
+  installers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
-    env:
-      EC_PERMANENT_TOKEN: ${{ secrets.EC_PERMANENT_TOKEN }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          go-version: 1.26.8
+          persist-credentials: false
+      - run: python -I scripts/test_release.py
 
-      - name: go vet
-        run: go vet ./...
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Linters
-        run: make linters
-
-  unit-tests:
-    runs-on: ubuntu-latest
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          go-version: 1.26.8
-      - name: Run unit tests
-        run: go test -race ./...
-
-  integration-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version: 1.26.8
-      - name: Run integration tests
-        run: go test -tags=integration -v -count=1 ./edgecenter/integrationtest/...
-
-  reseller-tests:
-    needs: [smoke, detect]
-    if: needs.detect.outputs.reseller == 'true' || needs.detect.outputs.shared == 'true'
-    runs-on: ubuntu-latest
-    env:
-      EC_CLIENT_ID: ${{ secrets.EC_RESELLER_CLIENT_ID }}
-      EC_PERMANENT_TOKEN: ${{ secrets.EC_RESELLER_PERMANENT_TOKEN }}
-    strategy:
-      matrix:
-        kind:
-          - tag: cloud_reseller_data_source
-          - tag: cloud_reseller_resource
-      fail-fast: false
-      max-parallel: 1
-    name: tests-${{ matrix.kind.tag }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: 1.26.8
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
-        with:
-          terraform_version: ~1.9.0
-      - name: Run tests (${{ matrix.kind.tag }})
-        run: go test -v ./edgecenter/test -tags ${{ matrix.kind.tag }} -short -timeout=10m
-
-  tests:
-    needs: [smoke, detect]
-    if: needs.detect.outputs.cloud == 'true' || needs.detect.outputs.shared == 'true'
-    runs-on: ubuntu-latest
-    env:
-      EC_CLIENT_ID: ${{ secrets.EC_CLIENT_ID }}
-      EC_PERMANENT_TOKEN: ${{ secrets.EC_PERMANENT_TOKEN }}
-    strategy:
-      matrix:
-        kind:
-          - tag: cloud_data_source
-          - tag: cloud_resource
-      fail-fast: false
-    name: tests-${{ matrix.kind.tag }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: 1.26.8
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
-        with:
-          terraform_version: ~1.9.0
-      - name: Sweep stale test resources
-        run: go test -v ./edgecenter/test -tags sweeper -sweep=all -timeout=10m
-        continue-on-error: true
-      - name: Run tests (${{ matrix.kind.tag }})
-        run: go test -v ./edgecenter/test -tags ${{ matrix.kind.tag }} -short -timeout=20m
-        continue-on-error: true
-
-  mkaas-sweep:
-    needs: [smoke, detect]
-    if: needs.detect.outputs.mkaas == 'true' || needs.detect.outputs.shared == 'true'
-    runs-on: ubuntu-latest
-    env:
-      EC_CLIENT_ID: ${{ secrets.EC_CLIENT_ID }}
-      EC_PERMANENT_TOKEN: ${{ secrets.EC_PERMANENT_TOKEN }}
-      TEST_MKAAS_REGION_ID: ${{ secrets.TEST_MKAAS_REGION_ID }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: 1.26.8
-      - name: Sweep stale MKAAS resources
-        run: go test -v ./edgecenter/test -tags sweeper -sweep=edgecenter_mkaas_cluster -timeout=10m
-        continue-on-error: true
-
-  mkaas-tests:
-    needs: [smoke, detect, mkaas-sweep]
-    if: needs.detect.outputs.mkaas == 'true' || needs.detect.outputs.shared == 'true'
-    runs-on: ubuntu-latest
-    env:
-      EC_CLIENT_ID: ${{ secrets.EC_CLIENT_ID }}
-      EC_PERMANENT_TOKEN: ${{ secrets.EC_PERMANENT_TOKEN }}
-      TEST_MKAAS_REGION_ID: ${{ secrets.TEST_MKAAS_REGION_ID }}
-      TF_CLI_CONFIG_FILE: ${{ github.workspace }}/.terraformrc-ci
-    strategy:
-      matrix:
-        kind:
-          - tag: cloud_data_source_mkaas
-            timeout: 30m
-          - tag: cloud_resource_mkaas
-            timeout: 30m
-      fail-fast: false
-      max-parallel: 2
-    name: tests-${{ matrix.kind.tag }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: 1.26.8
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
-        with:
-          terraform_version: ~1.9.0
-      - name: Build local provider
-        run: |
-          mkdir -p "$RUNNER_TEMP/provider-dev"
-          go build -o "$RUNNER_TEMP/provider-dev/terraform-provider-edgecenter" main.go
-          chmod +x "$RUNNER_TEMP/provider-dev/terraform-provider-edgecenter"
-          ls -la "$RUNNER_TEMP/provider-dev"
-      - name: Configure Terraform for local provider
-        run: |
-          cat > "$TF_CLI_CONFIG_FILE" <<EOF
-          provider_installation {
-            dev_overrides {
-              "Edge-Center/edgecenter" = "$RUNNER_TEMP/provider-dev"
-            }
-            direct {}
-          }
-          EOF
-      - name: Verify Terraform configuration
-        run: |
-          cat "$TF_CLI_CONFIG_FILE"
-          terraform version
-      - name: Verify dev override is active
-        run: |
-          tmp_dir="$(mktemp -d)"
-          cat > "$tmp_dir/main.tf" <<'EOF'
-          terraform {
-            required_providers {
-              edgecenter = {
-                source = "Edge-Center/edgecenter"
-              }
-            }
-          }
-          provider "edgecenter" {}
-          EOF
-          terraform -chdir="$tmp_dir" init -input=false -no-color
-          terraform -chdir="$tmp_dir" providers
-      - name: Run MKAAS tests (${{ matrix.kind.tag }})
-        run: go test -v ./edgecenter/test -tags ${{ matrix.kind.tag }} -short -timeout=${{ matrix.kind.timeout }}
-        continue-on-error: true
-
-  not-cloud-tests:
-    needs: [smoke, detect]
-    if: >-
-      needs.detect.outputs.cdn == 'true' || needs.detect.outputs.dns == 'true' ||
-      needs.detect.outputs.storage == 'true' || needs.detect.outputs.shared == 'true'
-    runs-on: ubuntu-latest
-    env:
-      EC_PERMANENT_TOKEN: ${{ matrix.tag == 'cdn' && secrets.EC_CDN_PERMANENT_TOKEN || secrets.EC_PERMANENT_TOKEN }}
-      EC_CDN_API: ${{ matrix.tag == 'cdn' && secrets.EC_CDN_API || '' }}
-    strategy:
-      matrix:
-        tag: [cdn, dns, storage]
-      fail-fast: false
-    name: tests-${{ matrix.tag }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: 1.26.8
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
-        with:
-          terraform_version: ~1.9.0
-      - name: Run tests (${{ matrix.tag }})
-        run: go test -v ./edgecenter/test -tags ${{ matrix.tag }} -timeout=15m
-
-  metrics:
-    needs: [smoke, unit-tests, integration-tests, reseller-tests, tests, mkaas-tests, not-cloud-tests]
-    if: always()
-    runs-on: ubuntu-latest
-    name: CI metrics summary
-    permissions:
-      actions: read
-      checks: read
-      contents: none
-      pull-requests: write
-    env:
-      METRICS_JOB_NAME: CI metrics summary
-      TARGET_SECONDS: 1800
-    steps:
-      - name: Wall-clock summary
+          go-version: '1.26.8'
+          check-latest: false
+      - name: Build all six platforms
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          run_started_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at')
-          jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs")
-
-          failed_job_ids='[]'
-          while IFS=$'\t' read -r job_id check_run_url; do
-            annotations=$(gh api --paginate --slurp "${check_run_url#https://api.github.com}/annotations?per_page=100")
-            if jq -e '[.[][] | select(.annotation_level == "failure")] | length > 0' <<<"$annotations" >/dev/null; then
-              failed_job_ids=$(jq -c --argjson job_id "$job_id" '. + [$job_id]' <<<"$failed_job_ids")
-            fi
-          done < <(
-            jq -r --arg metrics_job_name "$METRICS_JOB_NAME" '
-              .jobs[]
-              | select(.name != $metrics_job_name)
-              | [.id, .check_run_url]
-              | @tsv
-            ' <<<"$jobs_json"
-          )
-
-          report=$(jq -r --arg run_started "$run_started_at" --arg metrics_job_name "$METRICS_JOB_NAME" --argjson failed_job_ids "$failed_job_ids" '
-            def fmt(s):
-              (s | floor) as $i
-              | if $i < 60 then "\($i)s"
-                else "\(($i / 60) | floor)m \($i % 60)s"
-                end;
-
-            ($run_started | fromdate) as $start
-            | .jobs
-            | map(select(.name != $metrics_job_name))
-            | map(. + {
-                sec: (((.completed_at // (now | todate)) | fromdate) - (.started_at | fromdate)),
-                current: ((.started_at | fromdate) >= $start),
-                display_status: (
-                  .id as $job_id
-                  | if (
-                      .conclusion == "success"
-                      and (
-                        ($failed_job_ids | index($job_id) != null)
-                        or any(.steps[]?; .conclusion == "failure")
-                      )
-                    ) then "failed (allowed)"
-                    else (.conclusion // "running")
-                    end
-                )
-              })
-            | sort_by(.started_at)
-            | (map(select(.current))
-                | map((.completed_at // (now | todate)) | fromdate)
-                | (max // null)) as $end
-            | (if $end == null then 0 else ($end - $start | floor) end) as $total
-            | {
-                rows_full: map("| \(.name) | \(.display_status) | \(fmt(.sec)) | \(if .current then "this attempt" else "cached" end) |") | join("\n"),
-                rows_plain: map("| \(.name) | \(.display_status) | \(fmt(.sec)) |") | join("\n"),
-                total_sec: $total,
-                total_fmt: fmt($total),
-                cached: (map(select(.current | not)) | length),
-                allowed_failures: map(select(.display_status == "failed (allowed)") | .name)
-              }
-          ' <<<"$jobs_json")
-
-          total_sec=$(jq -r '.total_sec' <<<"$report")
-          total_fmt=$(jq -r '.total_fmt' <<<"$report")
-          cached=$(jq -r '.cached' <<<"$report")
-          allowed_failure_count=$(jq -r '.allowed_failures | length' <<<"$report")
-          allowed_failures=$(jq -r '.allowed_failures[]?' <<<"$report")
-          target_min=$((TARGET_SECONDS / 60))
-
-          if [ "$total_sec" -le "$TARGET_SECONDS" ]; then
-            status="within target"
-            indicator="ok"
-          else
-            status="exceeds target"
-            indicator="over"
-          fi
-
-          if [ "$cached" -gt 0 ]; then
-            rows=$(jq -r '.rows_full' <<<"$report")
-            header="| Job | Status | Duration | Source |"
-            sep="|-----|--------|----------|--------|"
-          else
-            rows=$(jq -r '.rows_plain' <<<"$report")
-            header="| Job | Status | Duration |"
-            sep="|-----|--------|----------|"
-          fi
-
-          report_file="$RUNNER_TEMP/ci-wall-clock.md"
-          {
-            echo "## CI wall-clock (attempt $GITHUB_RUN_ATTEMPT)"
-            echo ""
-            echo "$header"
-            echo "$sep"
-            echo "$rows"
-            echo ""
-            echo "**Total (this attempt):** $total_fmt"
-            echo "**Target:** ${target_min}m. **Result:** $status"
-            if [ "$allowed_failure_count" -gt 0 ]; then
-              echo "**Allowed failures:** $allowed_failure_count"
-            fi
-            if [ "$cached" -gt 0 ]; then
-              echo ""
-              echo "_${cached} job(s) cached from prior attempts; not included in total._"
-            fi
-            echo ""
-            echo "[Open workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
-          } > "$report_file"
-
-          cat "$report_file" >> "$GITHUB_STEP_SUMMARY"
-
-          while IFS= read -r job; do
-            [ -z "$job" ] && continue
-            echo "::warning title=Allowed test failure::$job contains a failed step allowed by continue-on-error."
-          done <<<"$allowed_failures"
-
-          echo "::notice title=ci-metrics::attempt=$GITHUB_RUN_ATTEMPT total_sec=$total_sec target_sec=$TARGET_SECONDS status=$indicator cached_jobs=$cached"
-
-      - name: Publish PR metrics comment
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-
-          marker='<!-- ci-wall-clock-summary -->'
-          report_file="$RUNNER_TEMP/ci-wall-clock.md"
-          payload=$(jq -Rs --arg marker "$marker" '{body: ($marker + "\n" + .)}' "$report_file")
-
-          comment_id=$(gh api --paginate --slurp \
-            "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
-            | jq -r --arg marker "$marker" '
-                [.[] | .[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))]
-                | last | .id // empty
-              ')
-
-          if [ -n "$comment_id" ]; then
-            gh api --method PATCH -H "Content-Type: application/json" \
-              "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
-              --input - <<<"$payload"
-          else
-            gh api --method POST -H "Content-Type: application/json" \
-              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --input - <<<"$payload"
-          fi
+          BUILD_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.16.99-patch4.19700101.1' }}
+        run: python3 -I scripts/release.py build --version "${BUILD_TAG#v}" --directory "$RUNNER_TEMP/provider-release"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-release-${{ github.sha }}
+          path: ${{ runner.temp }}/provider-release/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

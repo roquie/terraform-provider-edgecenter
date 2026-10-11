@@ -1,277 +1,271 @@
-Terraform EdgeCenter Provider
-------------------------------
+# Patched Terraform EdgeCenter provider
 
-<img alt="EdgeCenter" src="https://edgecenter.ru/files/marketing/logo_EC_black.svg" width="500px"/>
-====================================================================================
+This branch distributes a patched provider through GitHub Releases. Team members do not need Go or a local build.
 
-- [![Gitter chat](https://badges.gitter.im/hashicorp-terraform/Lobby.png)](https://gitter.im/hashicorp-terraform/Lobby)
+The provider source remains `registry.terraform.io/edge-center/edgecenter`. GitHub Releases is not a Terraform registry or a network mirror. Terraform cannot discover these releases through `terraform init` alone.
 
-Latest provider
-------------
-- [edge-center provider](https://registry.terraform.io/providers/Edge-Center/edgecenter/latest)
+## Included fixes
 
-Version check
-------------
-Whenever the provider is configured, which happens on `plan`, `apply`,
-`refresh` and `destroy`, it checks whether a newer release exists and prints a
-warning when the installed version is behind.
+Every release must contain commit `87f07794807ccde5ef484232f1fc1060c9935edc` in its history.
 
-The check asks the GitHub releases page of this repository first. Only if that
-fails does it fall back to the Terraform registry, and after that to the public
-Yandex Cloud terraform mirror. The answer, including a failure, is cached in
-the user cache directory for 24 hours, so at most one request per day leaves
-the machine. Nothing about your configuration, account or credentials is sent,
-and any failure is silent: an unreachable network leaves the run untouched and
-costs at most six seconds once a day.
+- Region and project selectors use `ForceNew` where the API does not permit changes.
+- Transient locked-409 responses use retries.
+- Load balancer reads tolerate incomplete status responses.
+- Immutable-409 responses use retries for supported operations.
+- The debug provider address keeps the upstream default.
 
-Set `EC_DISABLE_VERSION_CHECK=1` to turn the check off. It also stays quiet
-when `CHECKPOINT_DISABLE` or `TF_IN_AUTOMATION` is set to any value, and in
-builds without a release version, such as local builds installed through
-`dev_overrides`.
+These builds are prereleases. Review the Terraform plan before each deployment.
 
+## Install on Linux or macOS
 
-Using the provider
-------------------
-### Requirements
+Requirements: Bash, curl, unzip, and `sha256sum` or `shasum`. No cloud credentials are necessary for installation.
 
+1. Set the repository address and the exact release version.
 
--	[Terraform](https://www.terraform.io/downloads.html) >= 0.13
-
-### Configuring terraform
-
-#### Create Terraform configuration file
-```shell
-$ touch ~/.terraformrc
+```bash
+REPO=OWNER/REPOSITORY
+VERSION=0.16.99-patch4.20261011.2
+MIRROR="$PWD/.provider-mirror"
+CONFIG="$PWD/edgecenter-generated.tfrc"
+TOOLS=$(mktemp -d)
 ```
-For using terraform without VPN, you should configure mirror by
-[manual](https://edgecenter.ru/knowledge-base/storage/terraform) or
-configure mirror in `~/.terraformrc` file:
 
-```terraform
+2. Download the helper from the trusted release.
+
+```bash
+curl --fail --location --proto '=https' --proto-redir '=https' \
+  "https://github.com/$REPO/releases/download/v$VERSION/install-provider.sh" \
+  -o "$TOOLS/install-provider.sh"
+```
+
+3. Review the helper before you run it.
+4. Install the archive for the local operating system and CPU.
+
+```bash
+bash "$TOOLS/install-provider.sh" "$REPO" "$VERSION" "$MIRROR" "$CONFIG"
+export TF_CLI_CONFIG_FILE="$CONFIG"
+```
+
+The helper downloads the archive and `SHA256SUMS` over HTTPS. It checks the SHA-256 checksum and the archive file list. It does not run the provider.
+
+The helper installs the ZIP in the packed filesystem-mirror layout:
+
+```text
+MIRROR/registry.terraform.io/edge-center/edgecenter/
+  terraform-provider-edgecenter_VERSION_OS_ARCH.zip
+```
+
+Each archive contains one binary. The binary name is `terraform-provider-edgecenter_vVERSION_x5`, with `.exe` on Windows. The `_x5` suffix identifies plugin protocol 5.
+
+If the destination contains different bytes for the same version, the helper stops. It never replaces an existing version or a different CLI configuration.
+
+## Install on Windows
+
+Requirements: PowerShell 7 and Terraform. The helper supports AMD64 and ARM64.
+
+1. Set the repository address and the exact release version.
+
+```powershell
+$Repository = 'OWNER/REPOSITORY'
+$Version = '0.16.99-patch4.20261011.2'
+$Mirror = Join-Path $PWD '.provider-mirror'
+$Config = Join-Path $PWD 'edgecenter-generated.tfrc'
+$Tools = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $Tools
+$Helper = Join-Path $Tools 'install-provider.ps1'
+Invoke-WebRequest -Uri "https://github.com/$Repository/releases/download/v$Version/install-provider.ps1" -OutFile $Helper
+```
+
+2. Review the helper before you run it.
+3. Run the helper under the approved PowerShell execution policy.
+
+```powershell
+& $Helper -Repository $Repository -Version $Version -Mirror $Mirror -Config $Config
+$env:TF_CLI_CONFIG_FILE = $Config
+```
+
+The helper does not change the execution policy. It stores the packed ZIP, not an extracted executable.
+
+## Terraform configuration
+
+The helper creates a dedicated CLI configuration:
+
+```hcl
 provider_installation {
-
-   network_mirror {
-      url = "https://terraform-mirror.yandexcloud.net/"
-      include = ["registry.terraform.io/*/*"]
-   }
-   # For all other providers, install them directly from their origin provider 
-   # registries as normal. If you omit this, Terraform will _only_ use 
-   # the dev_overrides block, and so no other providers will be available. 
-   direct {
-      exclude = ["registry.terraform.io/*/*"]
-   }
+  filesystem_mirror {
+    path = "/absolute/path/to/.provider-mirror"
+    include = ["registry.terraform.io/edge-center/edgecenter"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/edge-center/edgecenter"]
+  }
 }
 ```
-### Project initializing
 
-#### Prepare module configuration file
-It is necessary to add provider settings according to the instructions https://developer.hashicorp.com/terraform/language/providers/requirements:
-Each Terraform module must declare which providers it requires, so that Terraform can install and use them.
+Only this provider uses the filesystem mirror. Other providers retain direct registry installation.
 
-To use the provider, prepare configuration file `provider.tf` in the module directory.
+`TF_CLI_CONFIG_FILE` selects this file instead of the global CLI configuration. The helper never edits `~/.terraformrc` or `%APPDATA%\terraform.rc`.
 
-```terraform
+If your global configuration contains credentials, caches, or other mirrors, prepare a separate team configuration before initialization:
+
+1. Copy the required blocks into the team configuration.
+2. Add the EdgeCenter filesystem mirror to the existing `provider_installation` block.
+3. Exclude only `registry.terraform.io/edge-center/edgecenter` from other applicable installation methods.
+4. Preserve all unrelated provider routes and exclusions.
+5. Set `TF_CLI_CONFIG_FILE` to the team configuration.
+
+Do not add a second `provider_installation` block. Do not commit credentials, local mirror contents, or machine-specific CLI configuration paths.
+
+Keep the helper-generated configuration separate from your team configuration. Future helper runs can reuse the unchanged generated file.
+
+In each Terraform root, pin the release version:
+
+```hcl
 terraform {
-  required_version = ">= 0.13.0"
-
   required_providers {
     edgecenter = {
-       source = "Edge-Center/edgecenter"
-       version = "{version_number}"  # need to specify (choose from https://github.com/Edge-Center/terraform-provider-edgecenter/releases)
+      source = "Edge-Center/edgecenter"
+      version = "= 0.16.99-patch4.20261011.2"
     }
   }
 }
-
-
-provider edgecenter {
-  edgecenter_platform_api = "https://api.edgecenter.ru/iam"
-  edgecenter_cloud_api = "https://api.edgecenter.ru/cloud"
-  permanent_api_token = "{your_permanent_token}" # need to specify (you can create it on the page https://accounts.edgecenter.ru/profile/api-tokens)
-}
 ```
-#### Initialize working directory
-Run terraform init in the module directory.
+
+A Git repository URL is not a provider source. A branch name is not a provider version. This installation does not use `dev_overrides`.
+
+After you install the archive and set the exact version, initialize Terraform:
+
 ```bash
 terraform init
 ```
-This command initializes a working directory containing Terraform configuration files. This is the first command that 
-should be run after writing a new Terraform configuration or cloning an existing one from version control. It is safe to run this command multiple times
 
-### Writing modules files
+## Lock files and multiple platforms
 
-Create module files using the examples provided in the `./examples` folder.
+The release checksum file covers the six archives, both helpers, and `provenance.json`. Checksums detect changed bytes. They do not authenticate the publisher.
 
+Trust depends on the repository, the release workflow, and HTTPS. This workflow does not publish GPG signatures or GitHub artifact attestations. An administrator with repository write access can still change tags or releases outside this workflow.
 
-Development
------------
-### Requirements
+Terraform creates local lock checksums for a filesystem mirror. These packages do not carry an upstream registry signature.
 
--	[Terraform](https://www.terraform.io/downloads.html) >= 0.13
--   [vault](https://developer.hashicorp.com/vault/install)
--	[Go](https://golang.org/doc/install) 1.26 (to build the provider plugin)
-
-
-
-### Initialization of the project
-
-#### Setting Vault envs
-Before initializing the project you should to set VAULT_ADDR and VAULT_TOKEN envs:
-```bash
-export VAULT_ADDR=<you can ask address from Cloud team (matermost tag: @devcloud)>
-export VAULT_TOKEN=<you can generate this token at the ${VAULT_ADDR} page>
-```
-#### Initialize
-Initialize the project using this command:
-```sh
-$ make init
-```
-
-### Building the provider
-
-```sh
-$ make build
-```
-
-### Using built Terraform provider
-
-To use the built provider from the previous step, you should add the dev_overrides option to the `~/.terraformrc` file:
-
-```terraform
-provider_installation { 
- 
-  dev_overrides { 
-      "local.edgecenter.ru/repo/edgecenter" = "/<dev-path>/terraform-provider-edgecenter/bin" 
-  } 
-  
-  network_mirror {
-    url = "https://terraform-mirror.yandexcloud.net/"
-    include = ["registry.terraform.io/*/*"]
-  }
- 
-  # For all other providers, install them directly from their origin provider 
-  # registries as normal. If you omit this, Terraform will _only_ use 
-  # the dev_overrides block, and so no other providers will be available. 
-    direct {
-    exclude = ["registry.terraform.io/*/*"]
-  }
-}
-```
-Then you should use `"local.edgecenter.ru/repo/edgecenter"` source in required_provider settings in the `provider.tf` file:
-
-```terraform
-terraform {
-  required_version = ">= 0.13.0"
-
-  required_providers {
-    edgecenter = {
-       source = "local.edgecenter.ru/repo/edgecenter"
-    }
-  }
-}
-
-
-provider edgecenter {
-  edgecenter_platform_api = "https://api.edgecenter.ru/iam"
-  edgecenter_cloud_api = "https://api.edgecenter.ru/cloud"
-  permanent_api_token = "{your_permanent_token}" # need to specify (you can create it on the page https://accounts.edgecenter.ru/profile/api-tokens)
-}
-```
-
-Migrating v1 resources to V2
-------------------
-Some resources are deprecated in favor of a second version: `edgecenter_instance` -> `edgecenter_instanceV2`,
-`edgecenter_loadbalancer` -> `edgecenter_loadbalancerv2`, `edgecenter_reseller_images` -> `edgecenter_reseller_imagesV2`.
-The `v2migrate` tool rewrites project manifests to the V2 schema and generates `removed` + `import` blocks,
-so the existing cloud objects move under the new resource types without destroy and create:
+For each required team platform, install its archive into the same mirror:
 
 ```bash
-go install github.com/Edge-Center/terraform-provider-edgecenter/cmd/v2migrate@latest
-v2migrate -dir ./my-project
+for PLATFORM in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64 windows_arm64; do
+  bash "$TOOLS/install-provider.sh" "$REPO" "$VERSION" "$MIRROR" "$CONFIG" "$PLATFORM"
+done
+terraform providers lock -fs-mirror="$MIRROR" \
+  -platform=darwin_amd64 -platform=darwin_arm64 \
+  -platform=linux_amd64 -platform=linux_arm64 \
+  -platform=windows_amd64 -platform=windows_arm64 \
+  registry.terraform.io/edge-center/edgecenter
 ```
 
-Or build from a repository clone with `make build_v2migrate` (the binary lands in `bin/v2migrate`).
-See the full guide in [docs/guides/v1-to-v2-migration.md](docs/guides/v1-to-v2-migration.md)
-and the tool readme in [cmd/v2migrate](cmd/v2migrate/README.md).
+On Windows, use the optional `-Platform` argument to download each required archive. Then run the same `terraform providers lock` command as one line.
 
-Testing
-------------------
-### Remote 
-Tests are run with provided secrets envs in the GitHub repository.
-### Local 
-For testing cloud data sources
+Review the EdgeCenter entry in `.terraform.lock.hcl`. Commit the reviewed lock file with the version change. Do not delete the whole lock file or replace unrelated provider entries.
+
+Do not run the lock command against the public registry for this patched version. The public registry does not contain this release.
+
+## Import, upgrade, and rollback
+
+`terraform import` uses the same selected provider binary as other Terraform commands. Keep `TF_CLI_CONFIG_FILE` set for each command.
+
+After initialization, use the resource-specific import format from the provider documentation:
+
 ```bash
-make test_cloud_data_source
+terraform import RESOURCE_ADDRESS RESOURCE_ID
 ```
-For testing cloud resources
+
+This guide does not run an import or change infrastructure.
+
+For an upgrade:
+
+1. Download the new release with the helper.
+2. Change only the exact EdgeCenter version constraint.
+3. Refresh the EdgeCenter lock entry from the filesystem mirror.
+4. Run `terraform init`.
+5. Review `terraform plan` before deployment.
+
+For a rollback:
+
+1. Install the earlier release into the mirror.
+2. Restore the earlier version constraint and its reviewed lock entry.
+3. Run `terraform init`.
+4. Review the plan for compatibility with the current state.
+
+A binary rollback does not roll back infrastructure or Terraform state. Keep earlier mirror packages until the rollback window ends.
+
+## Build and reproducibility
+
+Release builds use Go `1.26.8`, `CGO_ENABLED=0`, and the module versions from `go.mod` and `go.sum`. The builder uses `-mod=readonly`, `-trimpath`, `-buildvcs=false`, and an empty build ID. Linker flags set `main.version` to the exact semantic prerelease version.
+
+The builder creates all six targets:
+
+| Operating system | CPU architectures |
+| --- | --- |
+| macOS | AMD64, ARM64 |
+| Linux | AMD64, ARM64 |
+| Windows | AMD64, ARM64 |
+
+ZIP files use stored entries, fixed timestamps, fixed permissions, and fixed filenames. Compression-library versions cannot change these archive bytes.
+
+`provenance.json` records the source commit, required fixes commit, toolchain, build flags, module checksums, and binary checksums. It contains no cloud credentials or author identity.
+
+From a clean checkout of the release tag, rebuild with Python 3.11 or later and Go:
+
 ```bash
-make test_cloud_resource
+VERSION=0.16.99-patch4.20261011.2
+python3 -I scripts/release.py build --version "$VERSION" --directory /tmp/provider-rebuild-one
+python3 -I scripts/release.py build --version "$VERSION" --directory /tmp/provider-rebuild-two
+diff /tmp/provider-rebuild-one/SHA256SUMS /tmp/provider-rebuild-two/SHA256SUMS
 ```
-For testing not cloud (storage, cdn, dns) data sources and resources:
+
+Use new output directories for each build. Compare the rebuilt checksums with the trusted release checksum file.
+
+The release workflow uses `scripts/release.py`, not the inherited `.goreleaser.yml`. It does not use GPG keys, storage buckets, or the inherited Makefile installation targets.
+
+## CI and release procedure
+
+`.github/workflows/build.yml` runs credential-free checks on the dedicated branch and on pull requests. The release workflow reuses these checks.
+
+CI runs unit tests with the race detector, `go vet`, module checks, installer tests, and all six cross-builds. It keeps `TF_ACC` empty. It does not use cloud credentials or run cloud acceptance tests.
+
+Normal CI has `contents: read`. Only the publish job has `contents: write`. All action references use immutable commit SHAs. The publish job uses the short-lived `github.token`. No additional secret is necessary.
+
+To publish a new version:
+
+1. Work on `ci/patched-provider-releases`.
+2. Keep commit `87f07794807ccde5ef484232f1fc1060c9935edc` in the branch history.
+3. Run the local checks.
+4. Commit only the reviewed source and release files.
+5. Push the dedicated branch without force.
+6. Wait for its CI run to succeed.
+7. Choose a new version in the form `0.16.99-patch4.YYYYMMDD.N`.
+8. Make sure that neither a tag nor a release uses this version.
+9. Create a lightweight tag on the reviewed branch commit.
+10. Push that tag.
+
 ```bash
-make test_not_cloud
+VERSION=0.16.99-patch4.20261011.2
+git switch ci/patched-provider-releases
+git tag "v$VERSION"
+git push origin "refs/tags/v$VERSION"
 ```
 
-Lint
-----------
-To lint project code, use:
-```bash
-make linters
-```
+Do not reuse `0.16.99-patch4.20261011.1`. That version identifies a separate local build.
 
-Docs generating
-------------------
-To generate Terraform documentation, use the command `make docs`. This command uses the `terraform-plugin-docs` library to create provider documentation with examples and places it in the `docs` folder. These docs can be viewed on the provider registry page.
+The tag workflow checks the tag format, source commit, required ancestry, and dedicated branch ancestry. The workflow does not require a default-branch change.
 
+After all checks pass, the publish job creates a draft prerelease. It uploads all assets and downloads them again for checksum checks. Only then does it publish the prerelease.
 
-Debugging
-------------------
-There are two ways to debug the provider:
-### Goland debugging
-1. Add new go build configuration with field ```program arguments```:  
-```-debug -address=local.edgecenter.ru/repo/edgecenter```
-2. Run this configuration;
-3. Export generated TF_REATTACH_PROVIDERS env from debug output:
-```bash
-export TF_REATTACH_PROVIDERS='{"local.edgecenter.ru/repo/edgecenter":{"Protocol":"grpc","ProtocolVersion":5,"Pid":65114,"Test":true,"Addr":{"Network":"unix","String":"/var/folders/g4/q8cpkx6n7gg_1cvr0lrtkd4w0000gq/T/plugin1422839680"}}}'
-```
-4. Set a breakpoint in your code and apply the Terraform config:
-```bash
-terraform apply
-```
-5. Debugging.
+If a draft contains identical assets, a retry adds only missing assets. If any existing bytes differ, publication stops. A published version always rejects another publish attempt.
 
-### VSCode debugging
-1. Create a `launch.json` file:
-   * In the Run view, click `create a launch.json file`.
-   * Choose Go: Launch Package from the debug configuration drop-down menu. 
-   * VS Code will create a `launch.json` file in a `.vscode` folder in your workspace.
-2. Add a new configuration to `launch.json`:
-   * The `address` argument must be equal to the `source` field from your `provider.tf`.
-   ```json 
-   {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Debug Terraform Provider",
-            "type": "go",
-            "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}",
-            "env": {},
-            "args": [
-                "-debug",
-                "-address=local.edgecenter.ru/repo/edgecenter"
-            ]
-        }
-    ]
-   } 
-   ```
-3. Launch the debug mode: `Run > Start Debugging (F5)`.
-4. Copy the `TF_REATTACH_PROVIDERS` env from the console and export it to the terminal as follows:
-    ```shell
-    export TF_REATTACH_PROVIDERS='{"local.edgecenter.ru/repo/edgecenter":{...'
-    ```
-5. Set a breakpoint in your code and apply the Terraform config: `terraform apply`.
-6. Debugging.
+If source changes are necessary after a failed run, use a new tag and version. Do not move a tag or replace release assets.
 
-Thank You!
+Monitor the tag workflow in the repository Actions page. A pushed tag is not evidence of a successful release.
+
+## Provider documentation
+
+Resource documentation remains in [docs](docs). Examples remain in [examples](examples).
+
+The V1-to-V2 migration guide remains in [docs/guides/v1-to-v2-migration.md](docs/guides/v1-to-v2-migration.md). Provider upgrades do not run that migration automatically.
