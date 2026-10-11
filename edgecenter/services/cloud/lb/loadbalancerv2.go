@@ -242,13 +242,20 @@ func resourceLoadBalancerV2Read(ctx context.Context, d *schema.ResourceData, m i
 	d.Set("project_id", lb.ProjectID)
 	d.Set("region_id", lb.RegionID)
 	d.Set("name", lb.Name)
-	d.Set("flavor", lb.Flavor.FlavorName)
 
-	if lb.VipAddress != nil {
-		d.Set("vip_address", lb.VipAddress.String())
+	if flavorName := lb.Flavor.FlavorName; flavorName != "" {
+		d.Set("flavor", flavorName)
 	}
 
-	d.Set("vip_port_id", lb.VipPortID)
+	if lb.VipAddress != nil {
+		if vipAddress := lb.VipAddress.String(); vipAddress != "" {
+			d.Set("vip_address", vipAddress)
+		}
+	}
+
+	if vipPortID := lb.VipPortID; vipPortID != "" {
+		d.Set("vip_port_id", vipPortID)
+	}
 
 	fields := []string{"vip_network_id", "vip_subnet_id"}
 	tfutil.RevertState(d, &fields)
