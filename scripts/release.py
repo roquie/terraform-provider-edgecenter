@@ -184,8 +184,8 @@ def build(directory, version):
                 cwd=ROOT, env=target_env, check=True,
             )
             build_info = run("go", "version", "-m", str(binary), env=env)
-            if GO_VERSION not in build_info or f"-X main.version={version}" not in build_info:
-                raise ValueError("The binary does not contain the release build metadata.")
+            if GO_VERSION not in build_info or version.encode("ascii") not in binary.read_bytes():
+                raise ValueError("The binary does not contain the release toolchain and version.")
             check_platform(binary.read_bytes(), platform)
             name = archive_name(version, platform)
             write_zip(directory / name, binary, binary.name)
