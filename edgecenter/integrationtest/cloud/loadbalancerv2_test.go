@@ -89,6 +89,55 @@ func loadbalancerCreateCase(lbID string) support.ResourceCase[*cloudmock.MockedC
 	}
 }
 
+func loadbalancerCreateEmptyTransientFieldsCase(lbID string) support.ResourceCase[*cloudmock.MockedCloud] {
+	mc := cloudmock.NewMockedCloud(testProjectID, testRegionID)
+	cloudmock.ExpectProjectResolutionTimes(mc, testProjectID, 2)
+
+	mc.Loadbalancers.On("Create", mock.Anything,
+		mock.MatchedBy(func(req *edgecloud.LoadbalancerCreateRequest) bool {
+			return req.Name == "test-lb" && req.VipPortID == "port-42"
+		}),
+	).Return(&edgecloud.TaskResponse{Tasks: []string{"task-lb-2"}}, nil, nil)
+
+	mc.Tasks.On("Get", mock.Anything, "task-lb-2").
+		Return(&edgecloud.Task{
+			State: edgecloud.TaskStateFinished,
+			CreatedResources: map[string]interface{}{
+				"loadbalancers": []interface{}{lbID},
+			},
+		}, nil, nil)
+
+	lbTransient := sampleLoadBalancer(lbID)
+	lbTransient.VipAddress = nil
+	lbTransient.Flavor = edgecloud.Flavor{}
+
+	mc.Loadbalancers.On("Get", mock.Anything, lbID).
+		Return(lbTransient, nil, nil)
+
+	mc.Loadbalancers.On("MetadataList", mock.Anything, lbID).
+		Return([]edgecloud.MetadataDetailed{}, nil, nil)
+
+	return support.ResourceCase[*cloudmock.MockedCloud]{
+		Name:    "create keeps configured vip_port_id when API omits transient fields",
+		Op:      support.OpApply,
+		Prepare: func() *cloudmock.MockedCloud { return mc },
+		NewConfig: cloud.Merge(
+			cloud.WithProjectRegion(testProjectID, testRegionID),
+			map[string]interface{}{
+				"name":        "test-lb",
+				"vip_port_id": "port-42",
+			},
+		),
+		Check: func(t *testing.T, state *terraform.InstanceState, diags diag.Diagnostics, _ *cloudmock.MockedCloud) {
+			support.RequireNoDiags(t, diags)
+			support.RequireStateID(t, state, lbID)
+			support.RequireStateAttrs(t, state, map[string]string{
+				"vip_port_id": "port-42",
+			})
+		},
+	}
+}
+
 func loadbalancerReadCase(lbID string) support.ResourceCase[*cloudmock.MockedCloud] {
 	mc := cloudmock.NewMockedCloud(testProjectID, testRegionID)
 	cloudmock.ExpectProjectResolutionTimes(mc, testProjectID, 1)
@@ -342,6 +391,7 @@ func TestIntegrationLoadBalancerV2_TableDriven(t *testing.T) {
 
 	cases := []support.ResourceCase[*cloudmock.MockedCloud]{
 		loadbalancerCreateCase(testLoadBalancerID),
+		loadbalancerCreateEmptyTransientFieldsCase(testLoadBalancerID),
 		loadbalancerReadCase(testLoadBalancerID),
 		loadbalancerReadNotFoundCase(testLoadBalancerID),
 		loadbalancerUpdateNameCase(testLoadBalancerID),
