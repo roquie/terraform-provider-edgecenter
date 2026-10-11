@@ -19,10 +19,22 @@ var transientConflictBackoff = []time.Duration{
 	32 * time.Second,
 }
 
-func isTransientConflictBody(body []byte) bool {
+func isTransientConflictBody(body []byte, method string) bool {
 	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "is locked") ||
-		strings.Contains(lower, "invalid state pending_")
+	if strings.Contains(lower, "is locked") ||
+		strings.Contains(lower, "invalid state pending_") {
+		return true
+	}
+
+	return isMutatingMethod(method) &&
+		strings.Contains(lower, "is immutable and cannot be updated")
+}
+
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost ||
+		method == http.MethodPut ||
+		method == http.MethodPatch ||
+		method == http.MethodDelete
 }
 
 type conflictRetryTransport struct {
@@ -57,7 +69,7 @@ func (t *conflictRetryTransport) RoundTrip(req *http.Request) (*http.Response, e
 			return nil, closeErr
 		}
 
-		if !isTransientConflictBody(body) {
+		if !isTransientConflictBody(body, req.Method) {
 			resp.Body = io.NopCloser(bytes.NewReader(body))
 
 			return resp, nil
