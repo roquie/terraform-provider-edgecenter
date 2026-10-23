@@ -84,7 +84,8 @@ func resourceSecurityGroup() *schema.Resource {
 			"description": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "A detailed description of the security group.",
+				ForceNew:    true,
+				Description: "A detailed description of the security group. The API cannot change it, so a new value replaces the security group.",
 			},
 			"metadata_map": {
 				Type:        schema.TypeMap,

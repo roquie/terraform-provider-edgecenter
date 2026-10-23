@@ -526,3 +526,20 @@ func TestIntegrationSecurityGroup_TableDriven(t *testing.T) {
 
 	support.RunResourceCases(t, resource, cases, support.DispatchCase[*cloudmock.MockedCloud])
 }
+
+func TestIntegrationSecurityGroupDescriptionForcesNew(t *testing.T) {
+	t.Parallel()
+
+	resource := provider.Provider().ResourcesMap["edgecenter_securitygroup"]
+	base := cloud.Merge(
+		cloud.WithProjectRegion(testProjectID, testRegionID),
+		cloud.WithName("test-sg"),
+	)
+	state := support.NewState(t, resource, cloud.Merge(base, map[string]interface{}{"description": "old"}), "test-id")
+	config := terraform.NewResourceConfigRaw(cloud.Merge(base, map[string]interface{}{"description": "new"}))
+
+	diff, err := resource.Diff(t.Context(), state, config, nil)
+	require.NoError(t, err)
+	require.NotNil(t, diff)
+	require.True(t, diff.Attributes["description"].RequiresNew)
+}

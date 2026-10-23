@@ -56,7 +56,7 @@ resource "edgecenter_securitygroup" "sg" {
 
 ### Optional
 
-- `description` (String) A detailed description of the security group.
+- `description` (String) A detailed description of the security group. The API cannot change it, so a new value replaces the security group.
 - `last_updated` (String) The timestamp of the last update (use with update context).
 - `metadata_map` (Map of String) A map containing metadata, for example tags.
 - `project_id` (Number) The uuid of the project. Either 'project_id' or 'project_name' must be specified.
